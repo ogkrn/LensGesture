@@ -54,6 +54,8 @@ function draw() {
   textSize(18);
   text("FPS : " + floor(frameRate()), 20, 70);
   text("Hands : " + hands.length, 30, 100);
+  text("Canvas: " + width + " x " + height, 30, 130);
+text("Video: " + video.width + " x " + video.height, 30, 160);
 
   // Center guides for positioning objects during development.
   stroke(255);
@@ -66,7 +68,11 @@ function draw() {
     for (let point of hand.keypoints) {
       fill(0, 255, 0);
       noStroke();
-      circle(width - point.x, point.y, 10);
+      
+      let x = map(point.x, 0, video.width, 0, width);
+      let y = map(point.y, 0, video.height, 0, height);
+
+    circle(x, y, 10);
     }    
 }
 }
