@@ -1,50 +1,76 @@
 let video;
+let handPose;
+let hands = [];
 
 function setup() {
-    createCanvas(windowWidth, windowHeight);
+  createCanvas(windowWidth, windowHeight);
 
-    // Start the webcam. The actual video will be drawn on the canvas.
-    video = createCapture(VIDEO);
-    video.size(640, 480);
-    video.hide();
+  // Start the webcam. The actual video will be drawn on the canvas.
+  video = createCapture(VIDEO);
+  video.size(640, 480);
+  video.hide();
+
+  handPose = ml5.handPose(
+    {
+      maxHands: 2,
+      flipped: true,
+    },modelReady);
+}
+
+function modelReady() {
+    console.log("Model ready!");
+    handPose.detectStart(video, gotHands);
+}
+
+function gotHands(results) {
+  hands = results;
 }
 
 function draw() {
 
-    background(20);
+  background(20);
 
-    // Mirror the camera so it behaves like a selfie view.
-    push();
+  // Mirror the camera so it behaves like a selfie view.
+  push();
 
-    translate(width, 0);
-    scale(-1, 1);
+  translate(width, 0);
+  scale(-1, 1);
 
-    image(video, 0, 0, width, height);
+  image(video, 0, 0, width, height);
 
-    pop();
+  pop();
 
-    // Slightly darken the feed so overlays remain easy to read.
-    fill(0, 70);
-    rect(0, 0, width, height);
+  // Slightly darken the feed so overlays remain easy to read.
+  fill(0, 70);
+  rect(0, 0, width, height);
+ noStroke();
+  // Temporary debug information.
+  fill(255);
+  noStroke();
 
-    // Temporary debug information.
-    fill(255);
-    noStroke();
+  textSize(24);
+  text("GestureLens", 20, 40);
 
-    textSize(24);
-    text("GestureLens", 20, 40);
+  textSize(18);
+  text("FPS : " + floor(frameRate()), 20, 70);
+  text("Hands : " + hands.length, 30, 100);
 
-    textSize(18);
-    text("FPS : " + floor(frameRate()), 20, 70);
+  // Center guides for positioning objects during development.
+  stroke(255);
 
-    // Center guides for positioning objects during development.
-    stroke(255);
-
-    line(width / 2, 0, width / 2, height);
-    line(0, height / 2, width, height / 2);
+  line(width / 2, 0, width / 2, height);
+  line(0, height / 2, width, height / 2);
+  
+  // landmarks for the ai with 21 points
+  for (let hand of hands) {
+    for (let point of hand.keypoints) {
+      fill(0, 255, 0);
+      noStroke();
+      circle(width - point.x, point.y, 10);
+    }    
 }
-
+}
 // Keep the canvas in sync with the browser window.
 function windowResized() {
-    resizeCanvas(windowWidth, windowHeight);
+  resizeCanvas(windowWidth, windowHeight);
 }
