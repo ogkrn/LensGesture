@@ -15,17 +15,27 @@ const GESTURE_STABILITY_FRAMES = 6; // consecutive frames a gesture must hold be
 let currentFilterIndex = 0; // Index of the current filter
 let debugUIVisible = true;
 
+let isFrozen = false;
+let frozenFrameBuffer; // offscreen snapshot of the video at the moment of freezing
+let pinchHoldFrames = 0;
+const PINCH_HOLD_TRIGGER_FRAMES = 45; // ~0.75-1.5s depending on FPS, held pinch before it triggers
+
 const SMOOTHING = 0.3; // 0 = frozen, 1 = no smoothing (raw/instant)
 const SHOW_LANDMARK_LABELS = false; // set true only when debugging keypoint indices
 const filters = [
   { name: "Normal", css: "none" },
   { name: "Invert", css: "invert(100%)" },
   { name: "B&W Dark", css: "grayscale(100%) contrast(140%) brightness(80%)" },
-  { name: "Matrix", css: "sepia(100%) hue-rotate(90deg) saturate(400%) brightness(80%)" },
+  {
+    name: "Matrix",
+    css: "sepia(100%) hue-rotate(90deg) saturate(400%) brightness(80%)",
+  },
   { name: "Cool", css: "hue-rotate(180deg) saturate(140%)" },
-  { name: "Vintage", css: "sepia(50%) contrast(90%) brightness(105%) saturate(80%)" }
+  {
+    name: "Vintage",
+    css: "sepia(50%) contrast(90%) brightness(105%) saturate(80%)",
+  },
 ];
-
 
 let frame = {
   topLeft: { x: 0, y: 0 },
@@ -40,12 +50,27 @@ let frameInitialized = false;
 // --------------------
 
 const connections = [
-  [0, 1], [1, 2], [2, 3], [3, 4],        // Thumb
-  [0, 5], [5, 6], [6, 7], [7, 8],        // Index
-  [5, 9], [9, 10], [10, 11], [11, 12],   // Middle
-  [9, 13], [13, 14], [14, 15], [15, 16], // Ring
-  [13, 17], [17, 18], [18, 19], [19, 20],// Pinky
-  [0, 17],                               // Palm
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 4], // Thumb
+  [0, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8], // Index
+  [5, 9],
+  [9, 10],
+  [10, 11],
+  [11, 12], // Middle
+  [9, 13],
+  [13, 14],
+  [14, 15],
+  [15, 16], // Ring
+  [13, 17],
+  [17, 18],
+  [18, 19],
+  [19, 20], // Pinky
+  [0, 17], // Palm
 ];
 
 // --------------------
@@ -60,6 +85,8 @@ function setup() {
   video = createCapture(VIDEO);
   video.size(640, 480);
   video.hide();
+
+  frozenFrameBuffer = createGraphics(video.width, video.height);
 
   handPose = ml5.handPose(
     {
@@ -179,13 +206,23 @@ function updateGestures() {
 
   const leftCandidateRef = { value: leftGestureCandidate };
   const leftStableRef = { value: leftGestureStableFrames };
-  leftGesture = stabilizeGesture(rawLeft, leftGesture, leftCandidateRef, leftStableRef);
+  leftGesture = stabilizeGesture(
+    rawLeft,
+    leftGesture,
+    leftCandidateRef,
+    leftStableRef,
+  );
   leftGestureCandidate = leftCandidateRef.value;
   leftGestureStableFrames = leftStableRef.value;
 
   const rightCandidateRef = { value: rightGestureCandidate };
   const rightStableRef = { value: rightGestureStableFrames };
-  rightGesture = stabilizeGesture(rawRight, rightGesture, rightCandidateRef, rightStableRef);
+  rightGesture = stabilizeGesture(
+    rawRight,
+    rightGesture,
+    rightCandidateRef,
+    rightStableRef,
+  );
   rightGestureCandidate = rightCandidateRef.value;
   rightGestureStableFrames = rightStableRef.value;
 
@@ -220,6 +257,20 @@ function handleGestureTriggers() {
     toggleDebugUI();
   } else if (rightJustChanged && rightGesture === "OK") {
     toggleDebugUI();
+  }
+
+  // Pinch is duration-based, not transition-based: accumulate frames while
+  // held, trigger once at the threshold, then reset so it can fire again
+  // next time you pinch.
+  const eitherPinching = leftGesture === "Pinch" || rightGesture === "Pinch";
+
+  if (eitherPinching) {
+    pinchHoldFrames++;
+    if (pinchHoldFrames === PINCH_HOLD_TRIGGER_FRAMES) {
+      toggleFreeze();
+    }
+  } else {
+    pinchHoldFrames = 0;
   }
 }
 function toCanvas(point) {
@@ -327,7 +378,7 @@ function computeAffine(s0, s1, s2, d0, d1, d2) {
 // Clips to one destination triangle, applies the matching affine transform,
 // then stamps the whole video frame through it — only the clipped triangle
 // area actually shows.
-function drawTriangleWarp(sourcePts, destPts) {
+function drawTriangleWarp(sourcePts, destPts, sourceElement) {
   const [s0, s1, s2] = sourcePts;
   const [d0, d1, d2] = destPts;
 
@@ -348,7 +399,7 @@ function drawTriangleWarp(sourcePts, destPts) {
   ctx.filter = filters[currentFilterIndex].css; // apply the active filter to just this warped triangle
 
   ctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
-  ctx.drawImage(video.elt, 0, 0);
+  ctx.drawImage(sourceElement, 0, 0);
 
   ctx.restore();
 }
@@ -356,6 +407,8 @@ function drawTriangleWarp(sourcePts, destPts) {
 function drawWarpedImage() {
   if (hands.length < 2) return;
   if (video.width === 0 || video.height === 0) return;
+
+  const sourceElement = isFrozen ? frozenFrameBuffer.elt : video.elt;
 
   const sTopLeft = toSourcePoint(frame.topLeft);
   const sTopRight = toSourcePoint(frame.topRight);
@@ -366,12 +419,14 @@ function drawWarpedImage() {
   drawTriangleWarp(
     [sTopLeft, sTopRight, sBottomLeft],
     [frame.topLeft, frame.topRight, frame.bottomLeft],
+    sourceElement,
   );
 
   // Triangle 2: topRight, bottomRight, bottomLeft
   drawTriangleWarp(
     [sTopRight, sBottomRight, sBottomLeft],
     [frame.topRight, frame.bottomRight, frame.bottomLeft],
+    sourceElement,
   );
 }
 
@@ -471,6 +526,11 @@ function drawUI() {
   text("Filter : " + filters[currentFilterIndex].name + " (press F)", 20, 190);
   text("Left Gesture : " + leftGesture, 20, 220);
   text("Right Gesture : " + rightGesture, 20, 250);
+  text(
+    "Frozen : " + (isFrozen ? "YES (pinch again to unfreeze)" : "No"),
+    20,
+    280,
+  );
   stroke(255);
   line(width / 2, 0, width / 2, height);
   line(0, height / 2, width, height / 2);
@@ -521,6 +581,23 @@ function toggleDebugUI() {
   debugUIVisible = !debugUIVisible;
   console.log("Debug UI visible:", debugUIVisible);
 }
+function toggleFreeze() {
+  if (!isFrozen) {
+    // Capture the current raw video frame into the offscreen buffer
+    frozenFrameBuffer.image(
+      video,
+      0,
+      0,
+      frozenFrameBuffer.width,
+      frozenFrameBuffer.height,
+    );
+    isFrozen = true;
+    console.log("Frame frozen");
+  } else {
+    isFrozen = false;
+    console.log("Frame unfrozen");
+  }
+}
 function keyPressed() {
   if (key === "f" || key === "F") {
     nextFilter();
@@ -530,6 +607,9 @@ function keyPressed() {
   }
   if (key === "u" || key === "U") {
     toggleDebugUI();
+  }
+  if (key === "p" || key === "P") {
+    toggleFreeze();
   }
 }
 function windowResized() {
