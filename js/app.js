@@ -578,7 +578,7 @@ function drawUI() {
   fill(255);
   noStroke();
   textSize(16);
-  text("GestureLens", 30, 40);
+  text("LensGesture", 30, 40);
   textSize(12);
   fill(200);
   text("FPS " + floor(frameRate()) + "  ·  Hands " + hands.length, 30, 62);
