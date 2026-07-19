@@ -5,7 +5,7 @@ The project was built to explore hand pose estimation, real-time image processin
 
 ## How it works
 I used the library ml5 and it's handPose model tracks 21 landmarks per hand. The four corners of the floating frame are set directly from your index fingertips and thumbs, smoothed a bit frame to frame so it doesn't jitter around. That quad gets treated as a window into the live camera feed, warped to match its shape.
-I ended up avoiding WEBGL for the warp since it introduced more overhead than it was worth for this project. Instead the quad is split into two triangles, and each one gets a standard 2D canvas affine transform matched against the corresponding triangle in the raw camera image. Two triangles stitched together get you most of the way to a true perspective warp, and it's noticeably lighter to run.
+I ended up avoiding WEBGL for the warp since it introduced more overhead than it was worth for this project. Instead the quad is split into two triangles, and each one gets a standard 2D canvas affine transform matched against the corresponding triangle in the raw camera image. Two triangles stitched together get you most of the way to a true perspective warp, and it's noticeably lighter to run. 
 ## Features
 
 * Live webcam feed
