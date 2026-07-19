@@ -16,9 +16,13 @@ let currentFilterIndex = 0; // Index of the current filter
 let debugUIVisible = true;
 
 let isFrozen = false;
-let frozenFrameBuffer; // offscreen snapshot of the video at the moment of freezing
+let frozenFrameBuffer;
 let pinchHoldFrames = 0;
-const PINCH_HOLD_TRIGGER_FRAMES = 45; // ~0.75-1.5s depending on FPS, held pinch before it triggers
+const PINCH_HOLD_TRIGGER_FRAMES = 45;
+
+let frameAlpha = 0; // 0-255, smoothly follows whether both hands are present
+let filterFlashAmount = 0; // 0-255, spikes on filter change then decays
+let gesturePulses = []; // active pulse animations, one per triggered gesture
 
 const SMOOTHING = 0.3; // 0 = frozen, 1 = no smoothing (raw/instant)
 const SHOW_LANDMARK_LABELS = false; // set true only when debugging keypoint indices
@@ -123,6 +127,11 @@ function getGripPoint(hand) {
     y: (thumb.y + index.y) / 2,
   };
 }
+function drawPanel(x, y, w, h, radius = 10) {
+  noStroke();
+  fill(0, 0, 0, 130);
+  rect(x, y, w, h, radius);
+}
 function dist2D(a, b) {
   return dist(a.x, a.y, b.x, b.y);
 }
@@ -134,7 +143,10 @@ function isFingerExtended(hand, tipIndex, pipIndex) {
   const pip = hand.keypoints[pipIndex];
   return dist2D(wrist, tip) > dist2D(wrist, pip);
 }
-
+function spawnGesturePulse(hand) {
+  const wrist = toCanvas(hand.keypoints[0]);
+  gesturePulses.push({ x: wrist.x, y: wrist.y, radius: 10, alpha: 200 });
+}
 function classifyGesture(hand) {
   const indexExt = isFingerExtended(hand, 8, 6);
   const middleExt = isFingerExtended(hand, 12, 10);
@@ -228,51 +240,79 @@ function updateGestures() {
 
   handleGestureTriggers();
 }
+function drawGesturePulses() {
+  noFill();
+  for (let i = gesturePulses.length - 1; i >= 0; i--) {
+    const p = gesturePulses[i];
+
+    stroke(ACCENT_COLOR[0], ACCENT_COLOR[1], ACCENT_COLOR[2], p.alpha);
+    strokeWeight(2);
+    circle(p.x, p.y, p.radius);
+
+    p.radius += 4;
+    p.alpha -= 8;
+
+    if (p.alpha <= 0) {
+      gesturePulses.splice(i, 1);
+    }
+  }
+}
 
 // Fires an action once, on the frame a gesture first appears — not every
 // frame it's held. Either hand can trigger; whichever changes first wins.
 function handleGestureTriggers() {
   const leftJustChanged = leftGesture !== previousLeftGesture;
   const rightJustChanged = rightGesture !== previousRightGesture;
+  const sortedHands = getSortedHands();
 
   if (leftJustChanged && leftGesture === "Peace") {
     nextFilter();
+    if (sortedHands) spawnGesturePulse(sortedHands[0]);
   } else if (rightJustChanged && rightGesture === "Peace") {
     nextFilter();
+    if (sortedHands) spawnGesturePulse(sortedHands[1]);
   }
 
   if (leftJustChanged && leftGesture === "Fist") {
     previousFilter();
+    if (sortedHands) spawnGesturePulse(sortedHands[0]);
   } else if (rightJustChanged && rightGesture === "Fist") {
     previousFilter();
+    if (sortedHands) spawnGesturePulse(sortedHands[1]);
   }
 
   if (leftJustChanged && leftGesture === "OpenPalm") {
     resetFilter();
+    if (sortedHands) spawnGesturePulse(sortedHands[0]);
   } else if (rightJustChanged && rightGesture === "OpenPalm") {
     resetFilter();
+    if (sortedHands) spawnGesturePulse(sortedHands[1]);
   }
 
   if (leftJustChanged && leftGesture === "OK") {
     toggleDebugUI();
+    if (sortedHands) spawnGesturePulse(sortedHands[0]);
   } else if (rightJustChanged && rightGesture === "OK") {
     toggleDebugUI();
+    if (sortedHands) spawnGesturePulse(sortedHands[1]);
   }
 
-  // Pinch is duration-based, not transition-based: accumulate frames while
-  // held, trigger once at the threshold, then reset so it can fire again
-  // next time you pinch.
   const eitherPinching = leftGesture === "Pinch" || rightGesture === "Pinch";
 
   if (eitherPinching) {
     pinchHoldFrames++;
     if (pinchHoldFrames === PINCH_HOLD_TRIGGER_FRAMES) {
       toggleFreeze();
+      if (sortedHands) {
+        spawnGesturePulse(sortedHands[0]);
+        spawnGesturePulse(sortedHands[1]);
+      }
     }
   } else {
     pinchHoldFrames = 0;
   }
 }
+
 function toCanvas(point) {
   return {
     x: map(point.x, 0, video.width, 0, width),
@@ -312,6 +352,10 @@ function toSourcePoint(canvasPoint) {
 
 function updateFrame() {
   const sortedHands = getSortedHands();
+
+  const targetAlpha = sortedHands ? 255 : 0;
+  frameAlpha = lerp(frameAlpha, targetAlpha, 0.15);
+
   if (!sortedHands) return;
 
   const leftHand = sortedHands[0];
@@ -397,6 +441,7 @@ function drawTriangleWarp(sourcePts, destPts, sourceElement) {
   ctx.clip();
 
   ctx.filter = filters[currentFilterIndex].css; // apply the active filter to just this warped triangle
+  ctx.globalAlpha = frameAlpha / 255;
 
   ctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
   ctx.drawImage(sourceElement, 0, 0);
@@ -405,7 +450,7 @@ function drawTriangleWarp(sourcePts, destPts, sourceElement) {
 }
 
 function drawWarpedImage() {
-  if (hands.length < 2) return;
+  if (frameAlpha < 1) return; // fully faded out, nothing to draw
   if (video.width === 0 || video.height === 0) return;
 
   const sourceElement = isFrozen ? frozenFrameBuffer.elt : video.elt;
@@ -442,7 +487,21 @@ function drawGripPoints() {
   circle(left.x, left.y, 16);
   circle(right.x, right.y, 16);
 }
+function drawFrameCornerGlow() {
+  if (frameAlpha < 1) return;
 
+  const corners = [frame.topLeft, frame.topRight, frame.bottomLeft, frame.bottomRight];
+  const outerAlpha = map(frameAlpha, 0, 255, 0, 60);
+  const innerAlpha = map(frameAlpha, 0, 255, 0, 200);
+
+  noStroke();
+  for (const corner of corners) {
+    fill(ACCENT_COLOR[0], ACCENT_COLOR[1], ACCENT_COLOR[2], outerAlpha);
+    circle(corner.x, corner.y, 34);
+    fill(ACCENT_COLOR[0], ACCENT_COLOR[1], ACCENT_COLOR[2], innerAlpha);
+    circle(corner.x, corner.y, 14);
+  }
+}
 // --------------------
 // Skeleton
 // --------------------
@@ -511,29 +570,49 @@ function drawCamera() {
 // Debug UI
 // --------------------
 
+const ACCENT_COLOR = [0, 220, 255]; // single accent color used across the HUD
+
 function drawUI() {
+  // --- Top-left: small dev/status panel ---
+  drawPanel(16, 16, 210, 90);
   fill(255);
   noStroke();
-
-  textSize(24);
-  text("GestureLens", 20, 40);
-
-  textSize(18);
-  text("FPS : " + floor(frameRate()), 20, 70);
-  text("Hands : " + hands.length, 20, 100);
-  text("Canvas : " + width + " × " + height, 20, 130);
-  text("Video : " + video.width + " × " + video.height, 20, 160);
-  text("Filter : " + filters[currentFilterIndex].name + " (press F)", 20, 190);
-  text("Left Gesture : " + leftGesture, 20, 220);
-  text("Right Gesture : " + rightGesture, 20, 250);
+  textSize(16);
+  text("GestureLens", 30, 40);
+  textSize(12);
+  fill(200);
+  text("FPS " + floor(frameRate()) + "  ·  Hands " + hands.length, 30, 62);
+  text(video.width + "×" + video.height + " → " + width + "×" + height, 30, 80);
   text(
-    "Frozen : " + (isFrozen ? "YES (pinch again to unfreeze)" : "No"),
-    20,
-    280,
+    isFrozen ? "Frozen" : (leftGesture !== "None" || rightGesture !== "None"
+      ? leftGesture + " / " + rightGesture
+      : "No gesture"),
+    30,
+    98,
   );
-  stroke(255);
-  line(width / 2, 0, width / 2, height);
-  line(0, height / 2, width, height / 2);
+
+  
+
+  // --- Bottom-center: active filter name, the one thing users actually care about ---
+  const filterLabel = filters[currentFilterIndex].name;
+  textSize(20);
+  const labelWidth = textWidth(filterLabel) + 40;
+  drawPanel(width / 2 - labelWidth / 2, height - 60, labelWidth, 40, 20);
+  fill(ACCENT_COLOR[0], ACCENT_COLOR[1], ACCENT_COLOR[2]);
+  textAlign(CENTER, CENTER);
+  text(filterLabel, width / 2, height - 40);
+  textAlign(LEFT, BASELINE); // reset for other text calls
+
+  // --- Top-right: freeze indicator, only shown when active ---
+  if (isFrozen) {
+    drawPanel(width - 130, 16, 114, 40, 20);
+    fill(ACCENT_COLOR[0], ACCENT_COLOR[1], ACCENT_COLOR[2]);
+    noStroke();
+    circle(width - 110, 36, 14);
+    fill(255);
+    textSize(14);
+    text("Frozen", width - 95, 41);
+  }
 }
 
 // --------------------
@@ -551,39 +630,56 @@ function draw() {
 
   drawWarpedImage();
 
+  drawFrameCornerGlow();
+
+  drawGesturePulses();
+
+  drawFilterFlash();
+
+  drawUI();
+
   if (debugUIVisible) {
-    drawUI();
     drawGripPoints();
     drawSkeleton();
     drawLandmarks();
   }
 }
-
 // --------------------
 // Resize
 // --------------------
+function triggerFilterFlash() {
+  filterFlashAmount = 255;
+}
+function drawFilterFlash() {
+  if (filterFlashAmount <= 0) return;
+
+  noStroke();
+  fill(ACCENT_COLOR[0], ACCENT_COLOR[1], ACCENT_COLOR[2], filterFlashAmount * 0.15);
+  rect(0, 0, width, height);
+
+  filterFlashAmount = lerp(filterFlashAmount, 0, 0.2);
+  if (filterFlashAmount < 1) filterFlashAmount = 0;
+}
 function nextFilter() {
   currentFilterIndex = (currentFilterIndex + 1) % filters.length;
-  console.log("Filter:", filters[currentFilterIndex].name);
+  triggerFilterFlash();
 }
 
 function previousFilter() {
   currentFilterIndex =
     (currentFilterIndex - 1 + filters.length) % filters.length;
-  console.log("Filter:", filters[currentFilterIndex].name);
+  triggerFilterFlash();
 }
 function resetFilter() {
   currentFilterIndex = 0;
-  console.log("Filter reset to:", filters[currentFilterIndex].name);
+  triggerFilterFlash();
 }
 
 function toggleDebugUI() {
   debugUIVisible = !debugUIVisible;
-  console.log("Debug UI visible:", debugUIVisible);
 }
 function toggleFreeze() {
   if (!isFrozen) {
-    // Capture the current raw video frame into the offscreen buffer
     frozenFrameBuffer.image(
       video,
       0,
@@ -592,10 +688,8 @@ function toggleFreeze() {
       frozenFrameBuffer.height,
     );
     isFrozen = true;
-    console.log("Frame frozen");
   } else {
     isFrozen = false;
-    console.log("Frame unfrozen");
   }
 }
 function keyPressed() {
